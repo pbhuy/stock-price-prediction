@@ -5,11 +5,7 @@
 
 ### Model Building (Training)
 
-- Run stock_pred.py (or run alternative stock_pred.ipynb)
-
-```
-python3 stock_pred.py
-```
+- Run stock_pred.ipynb
 
 ### Running the Web Application
 

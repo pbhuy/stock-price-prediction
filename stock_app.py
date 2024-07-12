@@ -1,308 +1,108 @@
 import dash
-import dash_core_components as dcc
-import dash_html_components as html
-import pandas as pd
-import plotly.graph_objs as go
-from dash.dependencies import Input, Output
+from dash import dcc
+from dash import html
 from keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 
+from processing import load_data
+from plot import render_tab
 
 app = dash.Dash()
 server = app.server
 
-scaler = MinMaxScaler(feature_range=(0, 1))
+tickers = {
+    "btc": "BTC-USD",
+    "eth": "ETH-USD",
+    "ada": "ADA-USD",
+}
 
-# Load the dataset
-df_nse = pd.read_csv("./NSE-TATA.csv")
 
-df_nse["Date"] = pd.to_datetime(df_nse.Date, format="%Y-%m-%d")
-df_nse.index = df_nse["Date"]
+def predict_stock(coin_name):
+    dataset, new_data = load_data(coin_name)
+    q_80 = int(len(dataset) * 0.8)
 
-data = df_nse.sort_index(ascending=True, axis=0)
-new_data = pd.DataFrame(index=range(0, len(df_nse)), columns=["Date", "Close"])
+    train = dataset[0:q_80, :]
+    valid = dataset[q_80:, :]
 
-for i in range(0, len(data)):
-    new_data["Date"][i] = data["Date"][i]
-    new_data["Close"][i] = data["Close"][i]
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(dataset)
 
-new_data.index = new_data.Date
-new_data.drop("Date", axis=1, inplace=True)
+    x_train, y_train = [], []
+    prediction_days = 60
 
-dataset = new_data.values
+    for i in range(prediction_days, len(train)):
+        x_train.append(scaled_data[i - prediction_days : i, 0])
+        y_train.append(scaled_data[i, 0])
 
-train = dataset[0:987, :]
-valid = dataset[987:, :]
+    x_train, y_train = np.array(x_train), np.array(y_train)
 
-scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_data = scaler.fit_transform(dataset)
+    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
 
-x_train, y_train = [], []
+    model = load_model("./model/{}.h5".format(coin_name))
 
-for i in range(60, len(train)):
-    x_train.append(scaled_data[i - 60 : i, 0])
-    y_train.append(scaled_data[i, 0])
+    inputs = new_data[len(new_data) - len(valid) - prediction_days :].values
+    inputs = inputs.reshape(-1, 1)
+    inputs = scaler.transform(inputs)
 
-x_train, y_train = np.array(x_train), np.array(y_train)
+    x_test = []
+    for i in range(prediction_days, inputs.shape[0]):
+        x_test.append(inputs[i - prediction_days : i, 0])
+    x_test = np.array(x_test)
 
-x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
+    closing_price = model.predict(x_test)
+    closing_price = scaler.inverse_transform(closing_price)
 
-model = load_model("saved_model.h5")
+    train = new_data[:q_80]
+    valid = new_data[q_80:]
+    valid["Predictions"] = closing_price
+    return train, valid
 
-inputs = new_data[len(new_data) - len(valid) - 60 :].values
-inputs = inputs.reshape(-1, 1)
-inputs = scaler.transform(inputs)
 
-X_test = []
-for i in range(60, inputs.shape[0]):
-    X_test.append(inputs[i - 60 : i, 0])
-X_test = np.array(X_test)
-
-X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
-closing_price = model.predict(X_test)
-closing_price = scaler.inverse_transform(closing_price)
-
-train = new_data[:987]
-valid = new_data[987:]
-valid["Predictions"] = closing_price
-
-df = pd.read_csv("./stock_data.csv")
+btc_train, btc_valid = predict_stock(tickers["btc"])
+eth_train, eth_valid = predict_stock(tickers["eth"])
+ada_train, ada_valid = predict_stock(tickers["ada"])
 
 app.layout = html.Div(
     [
-        html.H1("Stock Price Analysis Dashboard", style={"textAlign": "center"}),
+        html.H1(
+            "Cryptocurrency Price Analysis Dashboard", style={"textAlign": "center"}
+        ),
         dcc.Tabs(
-            id="tabs",
+            id="tabs1",
             children=[
-                dcc.Tab(
-                    label="NSE-TATAGLOBAL Stock Data",
-                    children=[
-                        html.Div(
-                            [
-                                html.H2(
-                                    "Actual closing price",
-                                    style={"textAlign": "center"},
-                                ),
-                                dcc.Graph(
-                                    id="Actual Data",
-                                    figure={
-                                        "data": [
-                                            go.Scatter(
-                                                x=valid.index,
-                                                y=valid["Close"],
-                                                mode="lines",
-                                                name="Actual Close Price",
-                                            )
-                                        ],
-                                        "layout": go.Layout(
-                                            title="Actual Close Price",
-                                            xaxis={"title": "Date"},
-                                            yaxis={"title": "Closing Rate"},
-                                        ),
-                                    },
-                                ),
-                                html.H2(
-                                    "LSTM Predicted closing price",
-                                    style={"textAlign": "center"},
-                                ),
-                                dcc.Graph(
-                                    id="Predicted Data",
-                                    figure={
-                                        "data": [
-                                            go.Scatter(
-                                                x=valid.index,
-                                                y=valid["Predictions"],
-                                                mode="lines",
-                                                name="Predicted Close Price",
-                                            )
-                                        ],
-                                        "layout": go.Layout(
-                                            title="LSTM Predicted Close Price",
-                                            xaxis={"title": "Date"},
-                                            yaxis={"title": "Closing Rate"},
-                                        ),
-                                    },
-                                ),
-                            ]
-                        )
-                    ],
+                render_tab(
+                    btc_train.index,
+                    btc_valid["Close"],
+                    btc_valid.index,
+                    btc_valid["Predictions"],
+                    label=tickers["btc"],
+                    actual_id="btc-actual",
+                    predicted_id="btc-predicted",
                 ),
-                dcc.Tab(
-                    label="Facebook Stock Data",
-                    children=[
-                        html.Div(
-                            [
-                                html.H1(
-                                    "Stocks High vs Lows", style={"textAlign": "center"}
-                                ),
-                                dcc.Dropdown(
-                                    id="my-dropdown",
-                                    options=[
-                                        {"label": "Tesla", "value": "TSLA"},
-                                        {"label": "Apple", "value": "AAPL"},
-                                        {"label": "Facebook", "value": "FB"},
-                                        {"label": "Microsoft", "value": "MSFT"},
-                                    ],
-                                    multi=True,
-                                    value=["FB"],
-                                    style={
-                                        "display": "block",
-                                        "margin-left": "auto",
-                                        "margin-right": "auto",
-                                        "width": "60%",
-                                    },
-                                ),
-                                dcc.Graph(id="highlow"),
-                                html.H1(
-                                    "Stocks Market Volume",
-                                    style={"textAlign": "center"},
-                                ),
-                                dcc.Dropdown(
-                                    id="my-dropdown2",
-                                    options=[
-                                        {"label": "Tesla", "value": "TSLA"},
-                                        {"label": "Apple", "value": "AAPL"},
-                                        {"label": "Facebook", "value": "FB"},
-                                        {"label": "Microsoft", "value": "MSFT"},
-                                    ],
-                                    multi=True,
-                                    value=["FB"],
-                                    style={
-                                        "display": "block",
-                                        "margin-left": "auto",
-                                        "margin-right": "auto",
-                                        "width": "60%",
-                                    },
-                                ),
-                                dcc.Graph(id="volume"),
-                            ],
-                            className="container",
-                        ),
-                    ],
+                render_tab(
+                    eth_train.index,
+                    eth_valid["Close"],
+                    eth_valid.index,
+                    eth_valid["Predictions"],
+                    label=tickers["eth"],
+                    actual_id="eth-actual",
+                    predicted_id="eth-predicted",
+                ),
+                render_tab(
+                    ada_train.index,
+                    ada_valid["Close"],
+                    ada_valid.index,
+                    ada_valid["Predictions"],
+                    label=tickers["ada"],
+                    actual_id="ada-actual",
+                    predicted_id="ada-predicted",
                 ),
             ],
         ),
     ]
 )
-
-
-@app.callback(Output("highlow", "figure"), [Input("my-dropdown", "value")])
-def update_graph(selected_dropdown):
-    dropdown = {"TSLA": "Tesla", "AAPL": "Apple", "FB": "Facebook", "MSFT": "Microsoft"}
-    trace1 = []
-    trace2 = []
-    for stock in selected_dropdown:
-        trace1.append(
-            go.Scatter(
-                x=df[df["Stock"] == stock]["Date"],
-                y=df[df["Stock"] == stock]["High"],
-                mode="lines",
-                opacity=0.7,
-                name=f"High {dropdown[stock]}",
-                textposition="bottom center",
-            )
-        )
-        trace2.append(
-            go.Scatter(
-                x=df[df["Stock"] == stock]["Date"],
-                y=df[df["Stock"] == stock]["Low"],
-                mode="lines",
-                opacity=0.6,
-                name=f"Low {dropdown[stock]}",
-                textposition="bottom center",
-            )
-        )
-    traces = [trace1, trace2]
-    data = [val for sublist in traces for val in sublist]
-    figure = {
-        "data": data,
-        "layout": go.Layout(
-            colorway=["#5E0DAC", "#FF4F00", "#375CB1", "#FF7400", "#FFF400", "#FF0056"],
-            height=600,
-            title=f"High and Low Prices for {', '.join(str(dropdown[i]) for i in selected_dropdown)} Over Time",
-            xaxis={
-                "title": "Date",
-                "rangeselector": {
-                    "buttons": list(
-                        [
-                            {
-                                "count": 1,
-                                "label": "1M",
-                                "step": "month",
-                                "stepmode": "backward",
-                            },
-                            {
-                                "count": 6,
-                                "label": "6M",
-                                "step": "month",
-                                "stepmode": "backward",
-                            },
-                            {"step": "all"},
-                        ]
-                    )
-                },
-                "rangeslider": {"visible": True},
-                "type": "date",
-            },
-            yaxis={"title": "Price (USD)"},
-        ),
-    }
-    return figure
-
-
-@app.callback(Output("volume", "figure"), [Input("my-dropdown2", "value")])
-def update_graph(selected_dropdown_value):
-    dropdown = {"TSLA": "Tesla", "AAPL": "Apple", "FB": "Facebook", "MSFT": "Microsoft"}
-    trace1 = []
-    for stock in selected_dropdown_value:
-        trace1.append(
-            go.Scatter(
-                x=df[df["Stock"] == stock]["Date"],
-                y=df[df["Stock"] == stock]["Volume"],
-                mode="lines",
-                opacity=0.7,
-                name=f"Volume {dropdown[stock]}",
-                textposition="bottom center",
-            )
-        )
-    traces = [trace1]
-    data = [val for sublist in traces for val in sublist]
-    figure = {
-        "data": data,
-        "layout": go.Layout(
-            colorway=["#5E0DAC", "#FF4F00", "#375CB1", "#FF7400", "#FFF400", "#FF0056"],
-            height=600,
-            title=f"Market Volume for {', '.join(str(dropdown[i]) for i in selected_dropdown_value)} Over Time",
-            xaxis={
-                "title": "Date",
-                "rangeselector": {
-                    "buttons": list(
-                        [
-                            {
-                                "count": 1,
-                                "label": "1M",
-                                "step": "month",
-                                "stepmode": "backward",
-                            },
-                            {
-                                "count": 6,
-                                "label": "6M",
-                                "step": "month",
-                                "stepmode": "backward",
-                            },
-                            {"step": "all"},
-                        ]
-                    )
-                },
-                "rangeslider": {"visible": True},
-                "type": "date",
-            },
-            yaxis={"title": "Transactions Volume"},
-        ),
-    }
-    return figure
-
 
 if __name__ == "__main__":
     app.run_server(debug=True)
